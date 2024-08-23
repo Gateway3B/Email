@@ -1,0 +1,4 @@
+./mailu
+*.tar
+*.env
+*.pem

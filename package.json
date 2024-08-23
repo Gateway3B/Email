@@ -1,0 +1,8 @@
+{
+    "name": "kraken",
+    "version": "1.0.0",
+    "scripts": {
+        "start": "go run kraken.go",
+        "build:docker": "docker build -t kraken ."
+    }
+}
