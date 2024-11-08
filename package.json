@@ -3,6 +3,7 @@
     "version": "1.0.0",
     "scripts": {
         "start": "go run kraken.go",
-        "build:docker": "docker build -t kraken ."
+        "build:docker": "docker build -t kraken .",
+        "deploy": ".\\deploy\\deploy.bat"
     }
 }

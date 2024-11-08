@@ -2,15 +2,19 @@ package main
 
 import (
 	"crypto/tls"
+	"encoding/base64"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/emersion/go-imap"
 	"github.com/emersion/go-imap/client"
+	"github.com/emersion/go-message"
 )
 
 func main() {
@@ -27,14 +31,14 @@ func main() {
 
 	password, passwordexists := os.LookupEnv("password")
 	if !passwordexists {
-		password = "passwortd"
+		password = "password"
 	}
 
 	log.Println("mailserver: ", mailserver)
 
 	for {
 		login(mailserver, email, password)
-		time.Sleep(55 * time.Minute)
+		time.Sleep(20 * time.Minute)
 	}
 }
 
@@ -65,10 +69,10 @@ func login(mailserver string, email string, password string) {
 		done <- c.List("", "*", mailboxes)
 	}()
 
-	log.Println("Mailboxes:")
-	for m := range mailboxes {
-		log.Println("* " + m.Name)
-	}
+	// log.Println("Mailboxes:")
+	// for m := range mailboxes {
+	// 	log.Println("* " + m.Name)
+	// }
 
 	if err := <-done; err != nil {
 		log.Println(err)
@@ -81,7 +85,7 @@ func login(mailserver string, email string, password string) {
 		log.Println(err)
 		return
 	}
-	log.Println("Flags for INBOX:", mbox.Flags)
+	// log.Println("Flags for INBOX:", mbox.Flags)
 
 	// Get the last 30 messages
 	from := uint32(1)
@@ -92,52 +96,70 @@ func login(mailserver string, email string, password string) {
 	}
 	seqset := new(imap.SeqSet)
 	seqset.AddRange(from, to)
-
+	items := []imap.FetchItem{imap.FetchItem("BODY.PEEK[]")}
 	messages := make(chan *imap.Message, 30)
-	done = make(chan error, 1)
-	go func() {
-		done <- c.Fetch(seqset, []imap.FetchItem{imap.FetchItem("BODY.PEEK[]"), imap.FetchEnvelope}, messages)
-	}()
+	if err := c.Fetch(seqset, items, messages); err != nil {
+		log.Println(err)
+		return
+	}
 
 	var checkInLinks []string
 
-	log.Println("Last 30 messages:")
-	for msg := range messages {
-		// log.Println("* " + msg.Envelope.Subject)
-		if strings.Contains(msg.Envelope.Subject, "Time to check in!") {
-			for _, literal := range msg.Body {
-				buf := make([]byte, 1)
-				line := ""
-				for {
-					n, err := literal.Read(buf)
-					if err == io.EOF {
-						break
-					}
-					line += string(buf[:n])
+	for {
+		msg, ok := <-messages
+		if !ok {
+			break
+		}
 
-					if string(buf[:n]) == "\n" {
-						if strings.Contains(line, "https://ukg.iofficeconnect.com/external/api/reservation/CheckIn?id=") {
-							checkInLinks = append(checkInLinks, strings.TrimSuffix(line, "\r\n"))
-							break
-						}
-						line = ""
-					}
+		for _, literal := range msg.Body {
+			mr, err := message.Read(literal)
+			if err != nil {
+				log.Println(err)
+				return
+			}
+
+			var buf strings.Builder
+			_, err2 := io.Copy(&buf, mr.Body)
+			if err2 != nil {
+				log.Println(err2)
+				return
+			}
+
+			email_base64 := buf.String()
+			start_index := strings.Index(email_base64, "base64") + 6 + 4
+			end_index := strings.Index(email_base64, "=\r\n") + 1
+			email_base64 = email_base64[start_index:end_index]
+			email_base64 = strings.ReplaceAll(email_base64, "\r\n", "")
+
+			email_bytes, err := base64.StdEncoding.DecodeString(email_base64)
+			if err != nil {
+				log.Println(err)
+				return
+			}
+
+			email := string(email_bytes[:])
+
+			if strings.Contains(email, "https://ukg.iofficeconnect.com/external/api/reservation/CheckIn?id=") {
+				re := regexp.MustCompile(`https:\/\/ukg\.iofficeconnect\.com\/external\/api\/reservation\/CheckIn\?id=\d{6}&hash=[\d\w]{64}`)
+				link := re.FindStringSubmatch(email)
+				if len(link) >= 1 {
+					// log.Println("* LINK: --- " + link[0])
+					checkInLinks = append(checkInLinks, link[0])
 				}
 			}
+			break
 		}
 	}
 
-	if err := <-done; err != nil {
-		log.Println(err)
-	}
-
+	log.Println("Check In Link Count: " + strconv.Itoa(len(checkInLinks)))
 	for _, link := range checkInLinks {
-		log.Println(link)
-		res, err := http.Get(link)
+		log.Print(link)
+		log.Print(" : ")
+		_, err := http.Get(link)
 		if err != nil {
 			log.Println("Error using sign in link: ", err)
 		} else {
-			log.Println(res)
+			log.Println("Sign in Success")
 		}
 	}
 
@@ -166,6 +188,8 @@ func login(mailserver string, email string, password string) {
 		}
 
 		log.Println("Inbox deleted")
+	} else {
+		log.Println("No login emails detected")
 	}
 
 	log.Println("Done!")
