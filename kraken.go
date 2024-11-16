@@ -2,8 +2,6 @@ package main
 
 import (
 	"crypto/tls"
-	"encoding/base64"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -14,7 +12,6 @@ import (
 
 	"github.com/emersion/go-imap"
 	"github.com/emersion/go-imap/client"
-	"github.com/emersion/go-message"
 )
 
 func main() {
@@ -88,67 +85,39 @@ func login(mailserver string, email string, password string) {
 	// log.Println("Flags for INBOX:", mbox.Flags)
 
 	// Get the last 30 messages
+	emailCount := uint32(30)
 	from := uint32(1)
 	to := mbox.Messages
-	if mbox.Messages > 30 {
+	if mbox.Messages > emailCount {
 		// We're using unsigned integers here, only subtract if the result is > 0
-		from = mbox.Messages - 30
+		from = mbox.Messages - emailCount
 	}
 	seqset := new(imap.SeqSet)
 	seqset.AddRange(from, to)
-	items := []imap.FetchItem{imap.FetchItem("BODY.PEEK[]")}
-	messages := make(chan *imap.Message, 30)
-	if err := c.Fetch(seqset, items, messages); err != nil {
-		log.Println(err)
-		return
-	}
+
+	messages := make(chan *imap.Message, emailCount)
+	done = make(chan error, 1)
+	go func() {
+		done <- c.Fetch(seqset, []imap.FetchItem{imap.FetchEnvelope}, messages)
+	}()
 
 	var checkInLinks []string
 
-	for {
-		msg, ok := <-messages
-		if !ok {
-			break
+	for msg := range messages {
+		subject := msg.Envelope.Subject
+		if strings.Contains(subject, "https://ukg.iofficeconnect.com/external/api/reservation/CheckIn?id=") {
+			re := regexp.MustCompile(`https:\/\/ukg\.iofficeconnect\.com\/external\/api\/reservation\/CheckIn\?id=\d{6}&hash=[\d\w]{64}`)
+			link := re.FindStringSubmatch(subject)
+			if len(link) >= 1 {
+				// log.Println("* LINK: --- " + link[0])
+				checkInLinks = append(checkInLinks, link[0])
+			}
 		}
+	}
 
-		for _, literal := range msg.Body {
-			mr, err := message.Read(literal)
-			if err != nil {
-				log.Println(err)
-				return
-			}
-
-			var buf strings.Builder
-			_, err2 := io.Copy(&buf, mr.Body)
-			if err2 != nil {
-				log.Println(err2)
-				return
-			}
-
-			email_base64 := buf.String()
-			start_index := strings.Index(email_base64, "base64") + 6 + 4
-			end_index := strings.Index(email_base64, "=\r\n") + 1
-			email_base64 = email_base64[start_index:end_index]
-			email_base64 = strings.ReplaceAll(email_base64, "\r\n", "")
-
-			email_bytes, err := base64.StdEncoding.DecodeString(email_base64)
-			if err != nil {
-				log.Println(err)
-				return
-			}
-
-			email := string(email_bytes[:])
-
-			if strings.Contains(email, "https://ukg.iofficeconnect.com/external/api/reservation/CheckIn?id=") {
-				re := regexp.MustCompile(`https:\/\/ukg\.iofficeconnect\.com\/external\/api\/reservation\/CheckIn\?id=\d{6}&hash=[\d\w]{64}`)
-				link := re.FindStringSubmatch(email)
-				if len(link) >= 1 {
-					// log.Println("* LINK: --- " + link[0])
-					checkInLinks = append(checkInLinks, link[0])
-				}
-			}
-			break
-		}
+	if err := <-done; err != nil {
+		log.Println(err)
+		return
 	}
 
 	log.Println("Check In Link Count: " + strconv.Itoa(len(checkInLinks)))
